@@ -5,7 +5,7 @@ services:
     region: singapore
     plan: free
     buildCommand: "pip install -r requirements.txt && playwright install --with-deps chromium"
-    startCommand: "uvicorn main:app --host 0.0.0.0 --port $PORT"
+    startCommand: "uvicorn main:app --host 0.0.0.0 --port 8000"
     envVars:
       - key: SECRET
         sync: false
