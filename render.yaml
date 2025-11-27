@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: llm-quiz-solver
+    env: python
+    region: singapore
+    plan: free
+    buildCommand: "pip install -r requirements.txt && playwright install --with-deps chromium"
+    startCommand: "uvicorn main:app --host 0.0.0.0 --port $PORT"
+    envVars:
+      - key: SECRET
+        sync: false
+      - key: EMAIL
+        sync: false
+      - key: AIPIPE_API_KEY
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false

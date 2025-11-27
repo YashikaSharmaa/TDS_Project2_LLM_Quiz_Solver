@@ -1,0 +1,13 @@
+fastapi
+uvicorn
+playwright
+aiohttp
+requests
+pandas
+python-dotenv
+beautifulsoup4
+lxml
+pdfplumber
+pillow
+matplotlib
+openpyxl
