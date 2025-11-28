@@ -97,13 +97,30 @@ async def fetch_quiz_page(url: str) -> str:
     """Fetch and render JavaScript page using Playwright"""
     from playwright.async_api import async_playwright
     
+    print(f"Launching browser to render: {url}")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         page = await browser.new_page()
+        
+        print("Navigating to URL...")
         await page.goto(url, wait_until="networkidle")
+        
+        print("Waiting for JavaScript to execute...")
         await page.wait_for_timeout(3000)  # Wait for JS execution
+        
+        # Check if #result div exists and has content
+        result_div = await page.query_selector("#result")
+        if result_div:
+            result_text = await result_div.inner_text()
+            print(f"Found #result div with content: {result_text[:200]}...")
+        else:
+            print("No #result div found")
+        
+        print("Extracting page content...")
         content = await page.content()
         await browser.close()
+        
+        print(f"Content extracted, length: {len(content)} chars")
         return content
 
 def parse_quiz_instructions(html_content: str) -> str:
@@ -301,6 +318,4 @@ async def submit_answer(submit_url: str, email: str, secret: str, quiz_url: str,
 async def root():
     return {"status": "Quiz solver is running"}
 
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+# No if __name__ == "__main__" block needed for Render
