@@ -178,31 +178,29 @@ def extract_submit_url(instructions: str) -> str:
 async def solve_with_aipipe(instructions: str, quiz_url: str) -> any:
     """Use LLM API to solve the quiz (tries AI/Pipe first, falls back to OpenAI)"""
     
-    system_prompt = """You are an expert data analyst and problem solver. 
-You will receive quiz instructions that may involve:
-- Downloading and processing files (PDF, CSV, Excel, images)
-- Web scraping
-- Data analysis (aggregation, filtering, statistics)
-- Visualization tasks
-- API calls
+    system_prompt = """You are an expert data analyst. Extract ONLY the final answer value from quiz instructions.
 
-Analyze the instructions carefully and provide the answer in the exact format requested.
-If the answer should be a number, return just the number.
-If it's a string, return just the string.
-If it's a JSON object, return the JSON.
-If it's a base64 file, return the base64 string.
+CRITICAL: Return ONLY the answer value itself, nothing else.
+- If answer is a number: return just the number (e.g., 12345)
+- If answer is text: return just the text (e.g., "hello")
+- If answer is boolean: return just true or false
+- DO NOT return JSON objects with email/secret/url fields
+- DO NOT return the example payload structure
+- DO NOT include explanations
 
-Be precise and follow the instructions exactly."""
+Extract what the question is actually asking for, not the submission format."""
 
-    user_prompt = f"""Here are the quiz instructions:
+    user_prompt = f"""Quiz instructions:
 
 {instructions}
 
-Quiz URL: {quiz_url}
+What is the ACTUAL ANSWER to the question being asked? 
 
-Please solve this task and provide ONLY the answer in the exact format requested. 
-Do not include explanations unless asked.
-Think step by step about what needs to be done."""
+Return ONLY the answer value itself (a number, string, boolean, or data structure).
+Do NOT return the submission payload format.
+Do NOT include email, secret, or url fields.
+
+Answer:"""
 
     # Try AI/Pipe first
     if AIPIPE_API_KEY:
@@ -277,24 +275,38 @@ def parse_llm_response(answer_text: str) -> any:
         answer_text = '\n'.join(lines[1:-1]) if len(lines) > 2 else answer_text
         answer_text = answer_text.strip()
     
-    # Try to parse as JSON
+    # Remove "Answer:" prefix if present
+    if answer_text.lower().startswith('answer:'):
+        answer_text = answer_text[7:].strip()
+    
+    # Try to parse as JSON (but filter out submission payload format)
     if answer_text.startswith('{') or answer_text.startswith('['):
         try:
-            return json.loads(answer_text)
+            parsed = json.loads(answer_text)
+            # Check if it's the submission payload format (has email, secret, url keys)
+            if isinstance(parsed, dict) and all(k in parsed for k in ['email', 'secret', 'url']):
+                # Extract just the answer field
+                if 'answer' in parsed:
+                    return parsed['answer']
+            # Otherwise return the parsed JSON
+            return parsed
         except:
             pass
-    
-    # Try to parse as number
-    try:
-        if '.' in answer_text:
-            return float(answer_text)
-        return int(answer_text)
-    except:
-        pass
     
     # Try to parse as boolean
     if answer_text.lower() in ['true', 'false']:
         return answer_text.lower() == 'true'
+    
+    # Try to parse as number
+    try:
+        # Remove any non-numeric characters except . and -
+        cleaned = ''.join(c for c in answer_text if c.isdigit() or c in '.-')
+        if cleaned:
+            if '.' in cleaned:
+                return float(cleaned)
+            return int(cleaned)
+    except:
+        pass
     
     # Return as string
     return answer_text
