@@ -81,6 +81,15 @@ async def solve_quiz(url: str, email: str, secret: str, max_retries: int = 2):
                 file_data = await download_and_process_file(download_url)
                 print(f"File processed, preview: {str(file_data)[:500]}...")
                 
+                # If it's CSV data, try to calculate answer directly
+                if "CSV Data:" in file_data and "cutoff" in instructions.lower():
+                    try:
+                        answer = await calculate_from_csv(download_url, instructions)
+                        print(f"Calculated answer from CSV: {answer}")
+                        break
+                    except Exception as e:
+                        print(f"Could not auto-calculate: {e}")
+                
                 # Ask LLM to analyze the data
                 combined_instructions = f"""Original instructions:
 {instructions}
@@ -89,7 +98,7 @@ Downloaded and processed data from {download_url}:
 {file_data}
 
 Now calculate the answer based on the instructions. Return ONLY the final number/value.
-DO NOT respond with another DOWNLOAD or FETCH request."""
+DO NOT respond with another DOWNLOAD or FETCH request. Just give me the NUMBER."""
                 
                 answer = await solve_with_aipipe(combined_instructions, url)
                 print(f"Answer after processing file: {answer}")
@@ -203,9 +212,12 @@ async def download_and_process_file(url: str) -> str:
             # Handle CSV files
             if 'csv' in content_type.lower() or url.endswith('.csv'):
                 try:
-                    df = pd.read_csv(StringIO(content.decode('utf-8')))
-                    # Return full CSV data for better analysis
-                    return f"CSV Data:\nColumns: {list(df.columns)}\nRows: {len(df)}\nFull Data:\n{df.to_string()}"
+                    # First try without headers
+                    df = pd.read_csv(StringIO(content.decode('utf-8')), header=None)
+                    df.columns = [f'col_{i}' for i in range(len(df.columns))]
+                    
+                    # If first row looks like data (all numbers), use it
+                    return f"CSV Data:\nColumns: {list(df.columns)}\nRows: {len(df)}\nFull Data (all rows):\n{df.to_string(index=False)}"
                 except Exception as e:
                     return f"Error parsing CSV: {e}\nRaw content: {content.decode('utf-8')[:1000]}"
             
@@ -295,6 +307,37 @@ def parse_quiz_instructions(html_content: str) -> str:
         return body.get_text(strip=True)
     
     return html_content
+
+async def calculate_from_csv(csv_url: str, instructions: str) -> int:
+    """Direct calculation from CSV when cutoff is mentioned"""
+    import aiohttp
+    import pandas as pd
+    from io import StringIO
+    import re
+    
+    # Extract cutoff value from instructions
+    cutoff_match = re.search(r'cutoff[:\s]+(\d+)', instructions, re.IGNORECASE)
+    if not cutoff_match:
+        raise ValueError("No cutoff value found")
+    
+    cutoff = int(cutoff_match.group(1))
+    print(f"Found cutoff value: {cutoff}")
+    
+    # Download CSV
+    async with aiohttp.ClientSession() as session:
+        async with session.get(csv_url) as response:
+            content = await response.read()
+            df = pd.read_csv(StringIO(content.decode('utf-8')), header=None)
+            
+            # Get all numeric values
+            numbers = df[0].tolist()
+            print(f"Found {len(numbers)} numbers in CSV")
+            
+            # Calculate sum of numbers greater than cutoff
+            result = sum(n for n in numbers if n > cutoff)
+            print(f"Sum of numbers > {cutoff}: {result}")
+            
+            return result
 
 def extract_submit_url(instructions: str, current_url: str = None) -> str:
     """Extract submit URL from instructions"""
