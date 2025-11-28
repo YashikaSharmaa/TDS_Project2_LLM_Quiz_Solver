@@ -12,8 +12,8 @@ load_dotenv()
 
 app = FastAPI()
 
-YOUR_SECRET = os.getenv("SECRET", "your-secret-string")
-YOUR_EMAIL = os.getenv("EMAIL", "24f2001055@ds.study.iitm.ac.in")
+YOUR_SECRET = os.getenv("SECRET", "your-secret-here")
+YOUR_EMAIL = os.getenv("EMAIL", "your-email@example.com")
 AIPIPE_API_KEY = os.getenv("AIPIPE_API_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")  # Fallback to OpenAI
 
@@ -62,8 +62,34 @@ async def solve_quiz(url: str, email: str, secret: str, max_retries: int = 2):
         answer = await solve_with_aipipe(instructions, url)
         print(f"Generated answer: {answer}")
         
+        # Check if LLM wants to download a file
+        if isinstance(answer, str) and answer.startswith("DOWNLOAD:"):
+            download_url = answer.replace("DOWNLOAD:", "").strip()
+            print(f"LLM requested to download: {download_url}")
+            
+            # Make download_url absolute if relative
+            from urllib.parse import urljoin
+            download_url = urljoin(url, download_url)
+            print(f"Downloading: {download_url}")
+            
+            # Download and process the file
+            file_data = await download_and_process_file(download_url)
+            print(f"File processed, preview: {str(file_data)[:200]}...")
+            
+            # Ask LLM to analyze the data
+            combined_instructions = f"""Original instructions:
+{instructions}
+
+Downloaded and processed data from {download_url}:
+{file_data}
+
+Now calculate the answer based on the instructions. Return ONLY the final number/value."""
+            
+            answer = await solve_with_aipipe(combined_instructions, url)
+            print(f"Final answer after processing file: {answer}")
+            
         # Check if LLM wants to fetch another URL
-        if isinstance(answer, str) and answer.startswith("FETCH:"):
+        elif isinstance(answer, str) and answer.startswith("FETCH:"):
             fetch_url = answer.replace("FETCH:", "").strip()
             print(f"LLM requested to fetch: {fetch_url}")
             
@@ -150,6 +176,53 @@ async def fetch_quiz_page(url: str) -> str:
         print(f"Content extracted, length: {len(content)} chars")
         return content
 
+async def download_and_process_file(url: str) -> str:
+    """Download and process files (CSV, PDF, Excel, etc.)"""
+    import aiohttp
+    import pandas as pd
+    from io import BytesIO, StringIO
+    
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as response:
+            content = await response.read()
+            content_type = response.headers.get('Content-Type', '')
+            
+            # Handle CSV files
+            if 'csv' in content_type.lower() or url.endswith('.csv'):
+                try:
+                    df = pd.read_csv(StringIO(content.decode('utf-8')))
+                    return f"CSV Data:\nColumns: {list(df.columns)}\nRows: {len(df)}\nData preview:\n{df.head(20).to_string()}\nData tail:\n{df.tail(20).to_string()}"
+                except Exception as e:
+                    return f"Error parsing CSV: {e}\nRaw content: {content.decode('utf-8')[:1000]}"
+            
+            # Handle Excel files
+            elif 'excel' in content_type.lower() or url.endswith(('.xlsx', '.xls')):
+                try:
+                    df = pd.read_excel(BytesIO(content))
+                    return f"Excel Data:\nColumns: {list(df.columns)}\nRows: {len(df)}\nData preview:\n{df.head(20).to_string()}"
+                except Exception as e:
+                    return f"Error parsing Excel: {e}"
+            
+            # Handle PDF files
+            elif 'pdf' in content_type.lower() or url.endswith('.pdf'):
+                try:
+                    import pdfplumber
+                    with pdfplumber.open(BytesIO(content)) as pdf:
+                        text = ""
+                        for page in pdf.pages:
+                            text += page.extract_text() + "\n"
+                        return f"PDF Content:\n{text[:2000]}"
+                except Exception as e:
+                    return f"Error parsing PDF: {e}"
+            
+            # Handle JSON
+            elif 'json' in content_type.lower() or url.endswith('.json'):
+                return content.decode('utf-8')
+            
+            # Default: return as text
+            else:
+                return content.decode('utf-8')[:2000]
+
 def parse_quiz_instructions(html_content: str) -> str:
     """Extract quiz instructions from HTML"""
     from bs4 import BeautifulSoup
@@ -220,25 +293,29 @@ def extract_submit_url(instructions: str, current_url: str = None) -> str:
 async def solve_with_aipipe(instructions: str, quiz_url: str) -> any:
     """Use LLM API to solve the quiz (tries AI/Pipe first, falls back to OpenAI)"""
     
-    system_prompt = """You are an expert data analyst and web scraper. 
+    system_prompt = """You are an expert data analyst and web scraper with file processing capabilities.
 
 Your task:
 1. Read the quiz instructions carefully
-2. If it asks to scrape/visit another URL, you MUST tell me to fetch that URL
-3. Extract the required information
-4. Return ONLY the final answer value
+2. If instructions mention downloading a file (CSV, PDF, Excel, image), tell me: DOWNLOAD: <file_url>
+3. If instructions ask to scrape a webpage, tell me: FETCH: <page_url>
+4. If you already have all the data needed, extract and return ONLY the final answer value
 
-CRITICAL: Return ONLY the answer value itself, nothing else.
-- If answer is a number: return just the number (e.g., 12345)
-- If answer is text: return just the text (e.g., "SECRET123")
-- If answer is boolean: return just true or false
-- DO NOT return JSON with email/secret/url
-- DO NOT include explanations
+CRITICAL Response format:
+- To download a file: "DOWNLOAD: <full_url>"
+- To fetch a webpage: "FETCH: <full_url>"
+- To provide answer: Just the answer value (number, text, boolean, JSON)
 
-If the instructions mention scraping or visiting another page, your response should be:
-FETCH: <the URL to fetch>
+File Processing Tasks:
+- For CSV: I can download and process it for you
+- For sums/aggregations: Tell me what to calculate
+- For filtering: Tell me the filter conditions
 
-After I provide the fetched content, extract the answer from it."""
+Answer Format:
+- Number: 12345
+- Text: "SECRET123"
+- Boolean: true/false
+- DO NOT return submission payload format"""
 
     user_prompt = f"""Quiz instructions:
 
@@ -246,7 +323,10 @@ After I provide the fetched content, extract the answer from it."""
 
 Current URL: {quiz_url}
 
-What should I do? If there's a URL to scrape/fetch, respond with "FETCH: <url>". Otherwise, provide the answer directly.
+Analyze what needs to be done:
+- If there's a file to download (CSV, PDF, Excel, etc): respond "DOWNLOAD: <url>"
+- If there's a page to scrape: respond "FETCH: <url>"
+- If you have the answer: provide just the answer value
 
 Response:"""
 
