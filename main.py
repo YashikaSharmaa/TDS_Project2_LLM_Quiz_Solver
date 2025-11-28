@@ -58,62 +58,75 @@ async def solve_quiz(url: str, email: str, secret: str, max_retries: int = 2):
         submit_url = extract_submit_url(instructions, url)
         print(f"Submit URL: {submit_url}")
         
-        # Step 4: Solve the quiz using AI/Pipe
+        # Step 4: Solve the quiz using AI/Pipe (with retry loop for DOWNLOAD/FETCH)
+        max_fetch_attempts = 3
+        fetch_count = 0
+        
         answer = await solve_with_aipipe(instructions, url)
         print(f"Generated answer: {answer}")
         
-        # Check if LLM wants to download a file
-        if isinstance(answer, str) and answer.startswith("DOWNLOAD:"):
-            download_url = answer.replace("DOWNLOAD:", "").strip()
-            print(f"LLM requested to download: {download_url}")
-            
-            # Make download_url absolute if relative
-            from urllib.parse import urljoin
-            download_url = urljoin(url, download_url)
-            print(f"Downloading: {download_url}")
-            
-            # Download and process the file
-            file_data = await download_and_process_file(download_url)
-            print(f"File processed, preview: {str(file_data)[:200]}...")
-            
-            # Ask LLM to analyze the data
-            combined_instructions = f"""Original instructions:
+        while fetch_count < max_fetch_attempts:
+            # Check if LLM wants to download a file
+            if isinstance(answer, str) and answer.startswith("DOWNLOAD:"):
+                fetch_count += 1
+                download_url = answer.replace("DOWNLOAD:", "").strip()
+                print(f"LLM requested to download (attempt {fetch_count}): {download_url}")
+                
+                # Make download_url absolute if relative
+                from urllib.parse import urljoin
+                download_url = urljoin(url, download_url)
+                print(f"Downloading: {download_url}")
+                
+                # Download and process the file
+                file_data = await download_and_process_file(download_url)
+                print(f"File processed, preview: {str(file_data)[:500]}...")
+                
+                # Ask LLM to analyze the data
+                combined_instructions = f"""Original instructions:
 {instructions}
 
 Downloaded and processed data from {download_url}:
 {file_data}
 
-Now calculate the answer based on the instructions. Return ONLY the final number/value."""
-            
-            answer = await solve_with_aipipe(combined_instructions, url)
-            print(f"Final answer after processing file: {answer}")
-            
-        # Check if LLM wants to fetch another URL
-        elif isinstance(answer, str) and answer.startswith("FETCH:"):
-            fetch_url = answer.replace("FETCH:", "").strip()
-            print(f"LLM requested to fetch: {fetch_url}")
-            
-            # Make fetch_url absolute if relative
-            from urllib.parse import urljoin
-            fetch_url = urljoin(url, fetch_url)
-            print(f"Fetching: {fetch_url}")
-            
-            # Fetch the additional page
-            fetched_content = await fetch_quiz_page(fetch_url)
-            fetched_instructions = parse_quiz_instructions(fetched_content)
-            print(f"Fetched content: {fetched_instructions[:500]}...")
-            
-            # Ask LLM again with the fetched content
-            combined_instructions = f"""Original instructions:
+Now calculate the answer based on the instructions. Return ONLY the final number/value.
+DO NOT respond with another DOWNLOAD or FETCH request."""
+                
+                answer = await solve_with_aipipe(combined_instructions, url)
+                print(f"Answer after processing file: {answer}")
+                
+            # Check if LLM wants to fetch another URL
+            elif isinstance(answer, str) and answer.startswith("FETCH:"):
+                fetch_count += 1
+                fetch_url = answer.replace("FETCH:", "").strip()
+                print(f"LLM requested to fetch (attempt {fetch_count}): {fetch_url}")
+                
+                # Make fetch_url absolute if relative
+                from urllib.parse import urljoin
+                fetch_url = urljoin(url, fetch_url)
+                print(f"Fetching: {fetch_url}")
+                
+                # Fetch the additional page
+                fetched_content = await fetch_quiz_page(fetch_url)
+                fetched_instructions = parse_quiz_instructions(fetched_content)
+                print(f"Fetched content: {fetched_instructions[:500]}...")
+                
+                # Ask LLM again with the fetched content
+                combined_instructions = f"""Original instructions:
 {instructions}
 
 Fetched content from {fetch_url}:
 {fetched_instructions}
 
-Now extract the answer from the fetched content."""
-            
-            answer = await solve_with_aipipe(combined_instructions, url)
-            print(f"Final answer after fetch: {answer}")
+Now extract the answer from the fetched content.
+DO NOT respond with another DOWNLOAD or FETCH request."""
+                
+                answer = await solve_with_aipipe(combined_instructions, url)
+                print(f"Answer after fetch: {answer}")
+            else:
+                # Got a real answer, break the loop
+                break
+        
+        print(f"Final answer: {answer}")
         
         # Step 5: Submit the answer
         result = await submit_answer(submit_url, email, secret, url, answer)
@@ -191,7 +204,8 @@ async def download_and_process_file(url: str) -> str:
             if 'csv' in content_type.lower() or url.endswith('.csv'):
                 try:
                     df = pd.read_csv(StringIO(content.decode('utf-8')))
-                    return f"CSV Data:\nColumns: {list(df.columns)}\nRows: {len(df)}\nData preview:\n{df.head(20).to_string()}\nData tail:\n{df.tail(20).to_string()}"
+                    # Return full CSV data for better analysis
+                    return f"CSV Data:\nColumns: {list(df.columns)}\nRows: {len(df)}\nFull Data:\n{df.to_string()}"
                 except Exception as e:
                     return f"Error parsing CSV: {e}\nRaw content: {content.decode('utf-8')[:1000]}"
             
@@ -199,7 +213,7 @@ async def download_and_process_file(url: str) -> str:
             elif 'excel' in content_type.lower() or url.endswith(('.xlsx', '.xls')):
                 try:
                     df = pd.read_excel(BytesIO(content))
-                    return f"Excel Data:\nColumns: {list(df.columns)}\nRows: {len(df)}\nData preview:\n{df.head(20).to_string()}"
+                    return f"Excel Data:\nColumns: {list(df.columns)}\nRows: {len(df)}\nFull Data:\n{df.to_string()}"
                 except Exception as e:
                     return f"Error parsing Excel: {e}"
             
@@ -218,6 +232,30 @@ async def download_and_process_file(url: str) -> str:
             # Handle JSON
             elif 'json' in content_type.lower() or url.endswith('.json'):
                 return content.decode('utf-8')
+            
+            # Handle HTML (extract links to files)
+            elif 'html' in content_type.lower():
+                from bs4 import BeautifulSoup
+                html_text = content.decode('utf-8')
+                soup = BeautifulSoup(html_text, 'html.parser')
+                
+                # Find all links to files
+                file_links = []
+                for link in soup.find_all('a', href=True):
+                    href = link['href']
+                    if any(ext in href.lower() for ext in ['.csv', '.xlsx', '.xls', '.pdf', '.json']):
+                        file_links.append(f"{link.get_text()}: {href}")
+                
+                # Extract cutoff value if present
+                cutoff_span = soup.find(id='cutoff')
+                cutoff_value = cutoff_span.get_text() if cutoff_span else "Not found"
+                
+                result = f"HTML Page Content:\n"
+                if file_links:
+                    result += f"Found file links:\n" + "\n".join(file_links) + "\n\n"
+                result += f"Cutoff value: {cutoff_value}\n\n"
+                result += f"Full text: {soup.get_text()[:1000]}"
+                return result
             
             # Default: return as text
             else:
