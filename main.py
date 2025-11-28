@@ -55,12 +55,39 @@ async def solve_quiz(url: str, email: str, secret: str, max_retries: int = 2):
         print(f"Instructions: {instructions[:500]}...")  # Print first 500 chars
         
         # Step 3: Extract submit URL from instructions
-        submit_url = extract_submit_url(instructions)
+        submit_url = extract_submit_url(instructions, url)
         print(f"Submit URL: {submit_url}")
         
         # Step 4: Solve the quiz using AI/Pipe
         answer = await solve_with_aipipe(instructions, url)
         print(f"Generated answer: {answer}")
+        
+        # Check if LLM wants to fetch another URL
+        if isinstance(answer, str) and answer.startswith("FETCH:"):
+            fetch_url = answer.replace("FETCH:", "").strip()
+            print(f"LLM requested to fetch: {fetch_url}")
+            
+            # Make fetch_url absolute if relative
+            from urllib.parse import urljoin
+            fetch_url = urljoin(url, fetch_url)
+            print(f"Fetching: {fetch_url}")
+            
+            # Fetch the additional page
+            fetched_content = await fetch_quiz_page(fetch_url)
+            fetched_instructions = parse_quiz_instructions(fetched_content)
+            print(f"Fetched content: {fetched_instructions[:500]}...")
+            
+            # Ask LLM again with the fetched content
+            combined_instructions = f"""Original instructions:
+{instructions}
+
+Fetched content from {fetch_url}:
+{fetched_instructions}
+
+Now extract the answer from the fetched content."""
+            
+            answer = await solve_with_aipipe(combined_instructions, url)
+            print(f"Final answer after fetch: {answer}")
         
         # Step 5: Submit the answer
         result = await submit_answer(submit_url, email, secret, url, answer)
@@ -158,7 +185,7 @@ def parse_quiz_instructions(html_content: str) -> str:
     
     return html_content
 
-def extract_submit_url(instructions: str) -> str:
+def extract_submit_url(instructions: str, current_url: str = None) -> str:
     """Extract submit URL from instructions"""
     # Look for URLs in the instructions
     url_pattern = r'https?://[^\s<>"{}|\\^`\[\]]+'
@@ -169,38 +196,59 @@ def extract_submit_url(instructions: str) -> str:
         if 'submit' in url.lower():
             return url
     
-    # If no submit URL found, return the last URL
+    # Check for relative URLs like /submit or POST to /submit
+    relative_pattern = r'(?:POST|to|back to)\s+([/\w-]+)'
+    relative_matches = re.findall(relative_pattern, instructions, re.IGNORECASE)
+    
+    for match in relative_matches:
+        if 'submit' in match.lower():
+            # Convert relative URL to absolute
+            if current_url:
+                from urllib.parse import urljoin
+                return urljoin(current_url, match)
+            else:
+                # Fallback to common base URL
+                return f"https://tds-llm-analysis.s-anand.net{match}"
+    
+    # If no submit URL found, return the last URL or use default
     if urls:
         return urls[-1]
     
-    raise ValueError("No submit URL found in instructions")
+    # Default fallback
+    return "https://tds-llm-analysis.s-anand.net/submit"
 
 async def solve_with_aipipe(instructions: str, quiz_url: str) -> any:
     """Use LLM API to solve the quiz (tries AI/Pipe first, falls back to OpenAI)"""
     
-    system_prompt = """You are an expert data analyst. Extract ONLY the final answer value from quiz instructions.
+    system_prompt = """You are an expert data analyst and web scraper. 
+
+Your task:
+1. Read the quiz instructions carefully
+2. If it asks to scrape/visit another URL, you MUST tell me to fetch that URL
+3. Extract the required information
+4. Return ONLY the final answer value
 
 CRITICAL: Return ONLY the answer value itself, nothing else.
 - If answer is a number: return just the number (e.g., 12345)
-- If answer is text: return just the text (e.g., "hello")
+- If answer is text: return just the text (e.g., "SECRET123")
 - If answer is boolean: return just true or false
-- DO NOT return JSON objects with email/secret/url fields
-- DO NOT return the example payload structure
+- DO NOT return JSON with email/secret/url
 - DO NOT include explanations
 
-Extract what the question is actually asking for, not the submission format."""
+If the instructions mention scraping or visiting another page, your response should be:
+FETCH: <the URL to fetch>
+
+After I provide the fetched content, extract the answer from it."""
 
     user_prompt = f"""Quiz instructions:
 
 {instructions}
 
-What is the ACTUAL ANSWER to the question being asked? 
+Current URL: {quiz_url}
 
-Return ONLY the answer value itself (a number, string, boolean, or data structure).
-Do NOT return the submission payload format.
-Do NOT include email, secret, or url fields.
+What should I do? If there's a URL to scrape/fetch, respond with "FETCH: <url>". Otherwise, provide the answer directly.
 
-Answer:"""
+Response:"""
 
     # Try AI/Pipe first
     if AIPIPE_API_KEY:
