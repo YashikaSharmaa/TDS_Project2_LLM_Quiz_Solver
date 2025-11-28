@@ -12,8 +12,8 @@ load_dotenv()
 
 app = FastAPI()
 
-YOUR_SECRET = os.getenv("SECRET", "your-secret-here")
-YOUR_EMAIL = os.getenv("EMAIL", "your-email@example.com")
+YOUR_SECRET = os.getenv("SECRET", "your-secret-string")
+YOUR_EMAIL = os.getenv("EMAIL", "24f2001055@ds.study.iitm.ac.in")
 AIPIPE_API_KEY = os.getenv("AIPIPE_API_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")  # Fallback to OpenAI
 
