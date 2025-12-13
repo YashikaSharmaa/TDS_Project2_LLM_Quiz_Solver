@@ -95,23 +95,31 @@ async def solve_quiz(url: str, email: str, secret: str, max_retries: int = 2):
         if result.get("correct"):
             print("Answer correct!")
             if result.get("url"):
-                await asyncio.sleep(result.get("delay", 1))
+                delay = result.get("delay", 1)
+                if delay and delay > 0:
+                    await asyncio.sleep(delay)
                 await solve_quiz(result["url"], email, secret)
         else:
             print(f"Answer incorrect: {result.get('reason')}")
             if max_retries > 0:
                 print(f"Retrying... ({max_retries} attempts left)")
-                await asyncio.sleep(result.get("delay", 1))
+                delay = result.get("delay", 1)
+                if delay and delay > 0:
+                    await asyncio.sleep(delay)
                 retry_instructions = f"{instructions}\n\nPrevious attempt was wrong: {result.get('reason')}\nThe correct answer should be in this format based on the error."
                 answer = await solve_with_llm(retry_instructions, url)
                 print(f"Retry answer: {answer}")
                 result = await submit_answer(submit_url, email, secret, url, answer)
                 print(f"Retry result: {result}")
                 if result.get("correct") and result.get("url"):
-                    await asyncio.sleep(result.get("delay", 1))
+                    delay = result.get("delay", 1)
+                    if delay and delay > 0:
+                        await asyncio.sleep(delay)
                     await solve_quiz(result["url"], email, secret, max_retries - 1)
             elif result.get("url"):
-                await asyncio.sleep(result.get("delay", 1))
+                delay = result.get("delay", 1)
+                if delay and delay > 0:
+                    await asyncio.sleep(delay)
                 await solve_quiz(result["url"], email, secret, max_retries)
                 
     except Exception as e:
@@ -526,4 +534,3 @@ async def submit_answer(submit_url: str, email: str, secret: str, quiz_url: str,
 @app.get("/")
 async def root():
     return {"status": "Quiz solver is running"}
-    
