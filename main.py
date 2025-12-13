@@ -64,14 +64,27 @@ async def solve_quiz(url: str, email: str, secret: str, max_retries: int = 2):
         submit_url = "https://tds-llm-analysis.s-anand.net/submit"
         print(f"Submit URL: {submit_url}")
         
-        # Quick pattern matching for GitHub URLs
-        github_match = re.search(r'(?:repository|repo|GitHub URL|URL for)[:\s]+([a-zA-Z0-9_-]+/[a-zA-Z0-9_.-]+)', instructions)
-        if github_match and 'github' in instructions.lower():
-            repo_path = github_match.group(1)
-            answer = f"https://github.com/{repo_path}"
-            print(f"Detected GitHub URL pattern, answer: {answer}")
-        else:
-            # Solve with LLM
+        # Enhanced GitHub URL detection with multiple patterns
+        github_patterns = [
+            r'https://github\.com/([a-zA-Z0-9_-]+/[a-zA-Z0-9_.-]+)',  # Full URL
+            r'github\.com/([a-zA-Z0-9_-]+/[a-zA-Z0-9_.-]+)',  # Without https
+            r'(?:repository|repo|GitHub URL|URL|project)[\s:]+([a-zA-Z0-9_-]+/[a-zA-Z0-9_.-]+)',  # With keywords
+            r'\b([a-zA-Z0-9_-]+/[a-zA-Z0-9_.-]+)\b',  # Simple username/repo format
+        ]
+        
+        answer = None
+        if 'github' in instructions.lower():
+            for pattern in github_patterns:
+                github_match = re.search(pattern, instructions, re.IGNORECASE)
+                if github_match:
+                    repo_path = github_match.group(1)
+                    if '/' in repo_path and not repo_path.startswith('http'):
+                        answer = f"https://github.com/{repo_path}"
+                        print(f"Detected GitHub URL pattern, answer: {answer}")
+                        break
+        
+        # If no GitHub URL detected, solve with LLM
+        if not answer:
             answer = await solve_with_llm(instructions, url)
         
         # Submit answer
@@ -82,18 +95,24 @@ async def solve_quiz(url: str, email: str, secret: str, max_retries: int = 2):
         if result.get("correct"):
             print("Answer correct!")
             if result.get("url"):
+                await asyncio.sleep(result.get("delay", 1))
                 await solve_quiz(result["url"], email, secret)
         else:
             print(f"Answer incorrect: {result.get('reason')}")
             if max_retries > 0:
                 print(f"Retrying... ({max_retries} attempts left)")
-                retry_instructions = f"{instructions}\n\nPrevious attempt was wrong: {result.get('reason')}"
+                await asyncio.sleep(result.get("delay", 1))
+                retry_instructions = f"{instructions}\n\nPrevious attempt was wrong: {result.get('reason')}\nThe correct answer should be in this format based on the error."
                 answer = await solve_with_llm(retry_instructions, url)
+                print(f"Retry answer: {answer}")
                 result = await submit_answer(submit_url, email, secret, url, answer)
+                print(f"Retry result: {result}")
                 if result.get("correct") and result.get("url"):
-                    await solve_quiz(result["url"], email, secret)
+                    await asyncio.sleep(result.get("delay", 1))
+                    await solve_quiz(result["url"], email, secret, max_retries - 1)
             elif result.get("url"):
-                await solve_quiz(result["url"], email, secret)
+                await asyncio.sleep(result.get("delay", 1))
+                await solve_quiz(result["url"], email, secret, max_retries)
                 
     except Exception as e:
         print(f"Error solving quiz: {e}")
@@ -325,16 +344,20 @@ async def solve_with_aipipe(instructions: str, quiz_url: str) -> any:
 
 Your task:
 1. Read the quiz instructions carefully and understand what answer format is required
-2. If instructions mention downloading a file: tell me "DOWNLOAD: <file_url>"
-3. If instructions ask to scrape a webpage: tell me "FETCH: <page_url>"
-4. If you have all data needed, return ONLY the final answer value
+2. **CRITICAL: If you see a GitHub repository reference (like "username/repo" or "sanand0/tools"), you MUST return it as a full URL: https://github.com/username/repo**
+3. If instructions mention downloading a file: tell me "DOWNLOAD: <file_url>"
+4. If instructions ask to scrape a webpage: tell me "FETCH: <page_url>"
+5. If you have all data needed, return ONLY the final answer value
 
-Answer Format:
-- GitHub URL: https://github.com/username/repo
+Answer Format Examples:
+- GitHub URL: If you see "sanand0/tools" → return "https://github.com/sanand0/tools"
+- GitHub URL: If you see "username/repo" → return "https://github.com/username/repo"
 - Number: 12345
 - Text: "SECRET123"
 - Boolean: true or false
-- DO NOT return submission payload format"""
+- DO NOT return JSON submission payload format
+
+**IMPORTANT**: Always convert repository paths to full GitHub URLs!"""
 
     user_prompt = f"""Quiz instructions:
 
@@ -342,10 +365,11 @@ Answer Format:
 
 Current URL: {quiz_url}
 
-Important: Read carefully and identify what is being asked.
+CRITICAL: Read carefully and identify what is being asked.
 
 Common question types:
-- GitHub URL (like "username/repo"): Return https://github.com/username/repo
+- GitHub repository (like "sanand0/tools"): Return https://github.com/sanand0/tools
+- GitHub URL question: Always format as https://github.com/username/repo
 - Download file: respond "DOWNLOAD: <url>"
 - Scrape page: respond "FETCH: <url>"
 - Calculation: provide the number
@@ -420,14 +444,25 @@ def parse_llm_response(answer_text: str) -> any:
     """Parse LLM response into appropriate type"""
     answer_text = answer_text.strip()
     
+    # Remove markdown code blocks
     if answer_text.startswith('```'):
         lines = answer_text.split('\n')
         answer_text = '\n'.join(lines[1:-1]) if len(lines) > 2 else answer_text
         answer_text = answer_text.strip()
     
+    # Remove "Answer:" prefix
     if answer_text.lower().startswith('answer:'):
         answer_text = answer_text[7:].strip()
     
+    # Check for GitHub URL pattern and ensure it's properly formatted
+    github_pattern = r'(?:https://github\.com/)?([a-zA-Z0-9_-]+/[a-zA-Z0-9_.-]+)'
+    github_match = re.search(github_pattern, answer_text)
+    if github_match and ('github' in answer_text.lower() or '/' in answer_text):
+        repo_path = github_match.group(1)
+        if '/' in repo_path:
+            return f"https://github.com/{repo_path}"
+    
+    # Handle JSON responses
     if answer_text.startswith('{') or answer_text.startswith('['):
         try:
             parsed = json.loads(answer_text)
@@ -438,9 +473,11 @@ def parse_llm_response(answer_text: str) -> any:
         except:
             pass
     
+    # Boolean
     if answer_text.lower() in ['true', 'false']:
         return answer_text.lower() == 'true'
     
+    # Number
     try:
         cleaned = ''.join(c for c in answer_text if c.isdigit() or c in '.-')
         if cleaned:
@@ -489,3 +526,4 @@ async def submit_answer(submit_url: str, email: str, secret: str, quiz_url: str,
 @app.get("/")
 async def root():
     return {"status": "Quiz solver is running"}
+    
