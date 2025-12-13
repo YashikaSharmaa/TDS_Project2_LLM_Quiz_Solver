@@ -58,16 +58,17 @@ async def solve_quiz(url: str, email: str, secret: str, max_retries: int = 2):
         submit_url = extract_submit_url(instructions, url)
         print(f"Submit URL: {submit_url}")
         
-        # Step 4: Solve the quiz using AI/Pipe (with retry loop for DOWNLOAD/FETCH)
-        max_fetch_attempts = 3
-        fetch_count = 0
-        
-        answer = await solve_with_aipipe(instructions, url)
-        print(f"Generated answer: {answer}")
-        
-        while fetch_count < max_fetch_attempts:
-            # Check if LLM wants to download a file
-            if isinstance(answer, str) and answer.startswith("DOWNLOAD:"):
+async def solve_quiz_with_llm(instructions: str, url: str) -> any:
+    """Solve quiz using LLM with multi-step fetching"""
+    max_fetch_attempts = 3
+    fetch_count = 0
+    
+    answer = await solve_with_aipipe(instructions, url)
+    print(f"Generated answer: {answer}")
+    
+    while fetch_count < max_fetch_attempts:
+        # Check if LLM wants to download a file
+        if isinstance(answer, str) and answer.startswith("DOWNLOAD:"):
                 fetch_count += 1
                 download_url = answer.replace("DOWNLOAD:", "").strip()
                 print(f"LLM requested to download (attempt {fetch_count}): {download_url}")
@@ -134,8 +135,6 @@ DO NOT respond with another DOWNLOAD or FETCH request."""
             else:
                 # Got a real answer, break the loop
                 break
-        
-        print(f"Final answer: {answer}")
         
         # Step 5: Submit the answer
         result = await submit_answer(submit_url, email, secret, url, answer)
@@ -375,10 +374,16 @@ File Processing:
 
 Current URL: {quiz_url}
 
-Analyze what needs to be done:
-- If there's a file to download (CSV, PDF, Excel, etc): respond "DOWNLOAD: <url>"
-- If there's a page to scrape: respond "FETCH: <url>"
-- If you have the answer: provide just the answer value
+IMPORTANT: Read the instructions carefully and identify what is being asked.
+
+Common question types:
+- If asking for a GitHub URL (like "username/repo"): Return the full URL in format https://github.com/username/repo
+- If asking to download a file: respond "DOWNLOAD: <url>"
+- If asking to scrape a page: respond "FETCH: <url>"
+- If asking for a calculation: provide the number
+- If asking for text/code: provide the exact text
+
+Extract the answer from the instructions. Return ONLY the answer value in the correct format.
 
 Response:"""
 
