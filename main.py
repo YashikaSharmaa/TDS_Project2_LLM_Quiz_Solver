@@ -167,7 +167,17 @@ DO NOT respond with another DOWNLOAD or FETCH request."""
         import traceback
         traceback.print_exc()
 
-async def fetch_quiz_page(url: str) -> str:
+async def solve_quiz_with_llm(instructions: str, url: str) -> any:
+    """Solve quiz using LLM with multi-step fetching"""
+    max_fetch_attempts = 3
+    fetch_count = 0
+    
+    answer = await solve_with_aipipe(instructions, url)
+    print(f"Generated answer: {answer}")
+    
+    while fetch_count < max_fetch_attempts:
+        # Check if LLM wants to download a file
+        if isinstance(answer, str) and answer.startswith("DOWNLOAD:"):
     """Fetch and render JavaScript page using Playwright"""
     from playwright.async_api import async_playwright
     
