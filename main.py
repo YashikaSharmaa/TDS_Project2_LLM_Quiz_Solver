@@ -347,28 +347,24 @@ def extract_submit_url(instructions: str, current_url: str = None) -> str:
     
     # Find the submit URL (usually contains 'submit')
     for url in urls:
-        if 'submit' in url.lower():
+        if 'submit' in url.lower() and not url.endswith('submitwith'):
+            # Clean up any trailing text
+            url = url.split()[0].rstrip('.,;:)')
             return url
     
     # Check for relative URLs like /submit or POST to /submit
-    relative_pattern = r'(?:POST|to|back to)\s+([/\w-]+)'
+    relative_pattern = r'POST[^/]*/([/\w-]+)'
     relative_matches = re.findall(relative_pattern, instructions, re.IGNORECASE)
     
     for match in relative_matches:
-        if 'submit' in match.lower():
+        if 'submit' in match.lower() and match.strip() == 'submit':
             # Convert relative URL to absolute
             if current_url:
                 from urllib.parse import urljoin
-                return urljoin(current_url, match)
-            else:
-                # Fallback to common base URL
-                return f"https://tds-llm-analysis.s-anand.net{match}"
+                base_url = '/'.join(current_url.split('/')[:3])  # Get base domain
+                return f"{base_url}/submit"
     
-    # If no submit URL found, return the last URL or use default
-    if urls:
-        return urls[-1]
-    
-    # Default fallback
+    # Default fallback - use the known submit endpoint
     return "https://tds-llm-analysis.s-anand.net/submit"
 
 async def solve_with_aipipe(instructions: str, quiz_url: str) -> any:
@@ -532,8 +528,29 @@ async def submit_answer(submit_url: str, email: str, secret: str, quiz_url: str,
     print(f"Submitting to {submit_url}: {payload}")
     
     async with aiohttp.ClientSession() as session:
-        async with session.post(submit_url, json=payload) as response:
-            return await response.json()
+        try:
+            async with session.post(submit_url, json=payload, timeout=aiohttp.ClientTimeout(total=30)) as response:
+                response_text = await response.text()
+                
+                # Check if response is JSON
+                if response.status == 404:
+                    print(f"404 Error - URL not found: {submit_url}")
+                    print(f"Response: {response_text}")
+                    # Try default submit URL
+                    submit_url = "https://tds-llm-analysis.s-anand.net/submit"
+                    print(f"Retrying with: {submit_url}")
+                    async with session.post(submit_url, json=payload, timeout=aiohttp.ClientTimeout(total=30)) as retry_response:
+                        return await retry_response.json()
+                
+                try:
+                    return json.loads(response_text)
+                except json.JSONDecodeError:
+                    print(f"Failed to parse JSON response: {response_text}")
+                    return {"correct": False, "reason": "Invalid response format"}
+                    
+        except Exception as e:
+            print(f"Error submitting answer: {e}")
+            return {"correct": False, "reason": str(e)}
 
 @app.get("/")
 async def root():
