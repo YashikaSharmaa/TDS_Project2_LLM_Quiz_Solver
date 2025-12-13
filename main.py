@@ -341,30 +341,8 @@ async def calculate_from_csv(csv_url: str, instructions: str) -> int:
 
 def extract_submit_url(instructions: str, current_url: str = None) -> str:
     """Extract submit URL from instructions"""
-    # Look for URLs in the instructions
-    url_pattern = r'https?://[^\s<>"{}|\\^`\[\]]+'
-    urls = re.findall(url_pattern, instructions)
-    
-    # Find the submit URL (usually contains 'submit')
-    for url in urls:
-        if 'submit' in url.lower() and not url.endswith('submitwith'):
-            # Clean up any trailing text
-            url = url.split()[0].rstrip('.,;:)')
-            return url
-    
-    # Check for relative URLs like /submit or POST to /submit
-    relative_pattern = r'POST[^/]*/([/\w-]+)'
-    relative_matches = re.findall(relative_pattern, instructions, re.IGNORECASE)
-    
-    for match in relative_matches:
-        if 'submit' in match.lower() and match.strip() == 'submit':
-            # Convert relative URL to absolute
-            if current_url:
-                from urllib.parse import urljoin
-                base_url = '/'.join(current_url.split('/')[:3])  # Get base domain
-                return f"{base_url}/submit"
-    
-    # Default fallback - use the known submit endpoint
+    # Always use the known correct submit endpoint
+    # The instructions often have malformed URLs like "submitJSON" or "submitwith"
     return "https://tds-llm-analysis.s-anand.net/submit"
 
 async def solve_with_aipipe(instructions: str, quiz_url: str) -> any:
@@ -373,26 +351,23 @@ async def solve_with_aipipe(instructions: str, quiz_url: str) -> any:
     system_prompt = """You are an expert data analyst and web scraper with file processing capabilities.
 
 Your task:
-1. Read the quiz instructions carefully
+1. Read the quiz instructions carefully and understand what answer format is required
 2. If instructions mention downloading a file (CSV, PDF, Excel, image), tell me: DOWNLOAD: <file_url>
 3. If instructions ask to scrape a webpage, tell me: FETCH: <page_url>
 4. If you already have all the data needed, extract and return ONLY the final answer value
 
-CRITICAL Response format:
+Answer Format (READ CAREFULLY):
+- If asked for a URL: Return the full URL (e.g., https://github.com/user/repo)
+- If asked for a number: Return just the number (e.g., 12345)
+- If asked for text/string: Return just the text (e.g., "SECRET123")
+- If asked for boolean: Return true or false
+- If asked for a GitHub URL: Return complete GitHub URL starting with https://github.com/
+- DO NOT return submission payload format (no email/secret/url fields)
+
+File Processing:
 - To download a file: "DOWNLOAD: <full_url>"
 - To fetch a webpage: "FETCH: <full_url>"
-- To provide answer: Just the answer value (number, text, boolean, JSON)
-
-File Processing Tasks:
-- For CSV: I can download and process it for you
-- For sums/aggregations: Tell me what to calculate
-- For filtering: Tell me the filter conditions
-
-Answer Format:
-- Number: 12345
-- Text: "SECRET123"
-- Boolean: true/false
-- DO NOT return submission payload format"""
+- To provide answer: Just the answer value in the required format"""
 
     user_prompt = f"""Quiz instructions:
 
